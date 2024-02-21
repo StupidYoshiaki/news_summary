@@ -5,8 +5,7 @@ import pandas as pd
 import sys
 import os
 
-from datasets import Dataset
-from datasets import DatasetDict
+from datasets import Dataset, DatasetDict, load_metric
 
 from transformers import AutoTokenizer, PreTrainedTokenizer
 from typing import Any
@@ -34,19 +33,43 @@ def preprocess_data(
     """データの前処理"""
     # 記事のトークナイゼーションを行う
     inputs = tokenizer(
-        data["odai"], max_length=64, truncation=True
+        data["input"], max_length=64, truncation=True
     )
     # 見出しのトークナイゼーションを行う
     # 見出しはトークンIDのみ使用する
     inputs["labels"] = tokenizer(
-        data["boke"], max_length=64, truncation=True
+        data["target"], max_length=64, truncation=True
     )["input_ids"]
     return inputs
+
+
+# ファインチューニングのmetricとしてBLEUを使用する
+def compute_bleu(
+    predictions: list[str], references: list[list[str]]
+) -> dict:
+    """BLUEを算出"""
+    # sacreBLEUをロードする
+    bleu = load_metric("sacrebleu")
+    # 単語列を評価対象に加える
+    bleu.add_batch(predictions=predictions, references=references)
+    # BLEUを計算する
+    results = bleu.compute()
+    results["precisions"] = [
+        round(p, 2) for p in results["precisions"]
+    ]
+    return results
 
 
 def main():
     # 乱数シードの固定
     seed_everything(seed=42)
+    
+    # GPUが利用可能か確認する
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+    print(f"device: {device}")
     
     # データセットを読み込む
     df_train = pd.read_csv("./data/train.csv")
@@ -78,6 +101,15 @@ def main():
         fn_kwargs={"tokenizer": tokenizer},
         remove_columns=dataset["validation"].column_names,
     )
+    
+    # 量子化
+    # quant_config = BitsAndBytesConfig(
+    #     load_in_4bit=True,
+    #     bnb_4bit_use_double_quant=True,
+    #     bnb_4bit_quant_type="nf4",
+    #     bnb_4bit_compute_dtype=torch.bfloat16
+    # )
+    # quant_config = GPTQConfig(bits=4, dataset = "c4", tokenizer=tokenizer)
 
     # モデルを読み込む
     model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
@@ -85,13 +117,13 @@ def main():
     data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
     
     # resultディレクトリのディレクトリ数を取得する
-    v_num = len(os.listdir("./ml/t5/result")) + 1
+    v_num = len(os.listdir("./result/output_t5_translation")) + 1
     
     # Trainerに渡す引数を初期化する
     training_args = Seq2SeqTrainingArguments(
-        output_dir=f"./ml/t5/result/v{v_num}/output_t5_summarization", # 結果の保存フォルダ
-        per_device_train_batch_size=16, # 訓練時のバッチサイズ
-        per_device_eval_batch_size=16, # 評価時のバッチサイズ
+        output_dir=f"./result/output_t5_translation/v{v_num}", # 結果の保存フォルダ
+        per_device_train_batch_size=8, # 訓練時のバッチサイズ
+        per_device_eval_batch_size=8, # 評価時のバッチサイズ
         learning_rate=1e-4, # 学習率
         lr_scheduler_type="linear", # 学習率スケジューラ
         warmup_ratio=0.1, # 学習率のウォームアップ
@@ -110,7 +142,11 @@ def main():
         train_dataset=train_dataset,
         eval_dataset=validation_dataset,
         tokenizer=tokenizer,
+        compute_metrics=compute_bleu,
     )
 
     # 訓練する
     trainer.train()
+    
+if __name__ == "__main__":
+    main()

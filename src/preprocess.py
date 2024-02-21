@@ -15,8 +15,8 @@ df = pd.concat([df_1, df_2])
 # 結合したデータフレームをシャッフルする
 df = df.sample(frac=1, random_state=42).reset_index(drop=True)
 
-# カラムをquery, answerに変更
-df.columns = ["query", "answer"]
+# カラムをinput, targetに変更する
+df.columns = ["input", "target"]
 
 # 結合したデータフレームをtrainとvalidに分割
 df_train, df_valid = train_test_split(df, test_size=0.2, random_state=42)
